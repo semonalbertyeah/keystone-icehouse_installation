@@ -1,1 +1,181 @@
 A total tutorial for installing keystone for openstack-icehouse
+
+============
+Environment:
+============
+centos 6.7 x86_64 minimal iso
+
+======================
+Databases (mysql):
+======================
+! install
+# yum install mysql mysql-server MySQL-python
+
+! Edit /etc/my.cnf
+[mysqld]
+...
+bind-address = 192.168.111.211
+
+! enable InnoDB, utf-8 set, utf-8 collation
+[mysqld]
+...
+default-storage-engine = innodb
+innodb_file_per_table
+collation-server = utf8_general_ci
+init-connect = 'SET NAMES utf8'
+character-set-server = utf8
+
+! start and enable
+# service mysqld start
+# chkconfig mysqld on
+
+! init mysql.
+# mysql_install_db
+# mysql_secure_installation
+
+================================
+yum repo for openstack-icehouse
+================================
+! openstack RDO use yum-priorities
+# yum install yum-plugin-priorities
+
+! enable RDO repository.
+# yum install https://repos.fedorapeople.org/repos/openstack/EOL/openstack-icehouse/epel-6/rdo-release-icehouse-3.noarch.rpm
+
+! install repel
+# yum install epel-release
+
+! install openstack-utils -> containing utility programs that make installation and configuration easier.
+# yum install openstack-utils
+
+! openstack-selinux -> including policy files required to configure SELinux during openstack installation.
+# yum install openstack-selinux
+
+! upgrade systems
+# yum upgrade
+
+
+==============
+keystone
+==============
+! install 
+# yum install openstack-keystone python-keystoneclient
+
+! specify database to use (set keystone database password)
+# openstack-config --set /etc/keystone/keystone.conf database connection \
+                        mysql://keystone:KEYSTONE_DBPASS@localhost/keystone
+
+! login mysql, create keystone database user
+$ mysql -u root -p DB_PASSWORD_SET_WHEN_EXECUTE__mysql_secure_installation
+mysql> CREATE DATABASE keystone;
+mysql> GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'localhost' IDENTIFIED BY 'KEYSTONE_PASS';
+mysql> GRANT ALL PRIVILEGES ON keystone.* TO 'keystone'@'%' IDENTIFIED BY 'KEYSTONE_PASS';
+mysql> exit;
+
+! create db tables for keystone
+# su -s /bin/sh -c "keystone-manage db_sync" keystone
+
+! define admin token
+# ADMIN_TOKEN=$(openssl rand -hex 10)
+# openstack-config --set /etc/keystone/keystone.conf DEFAULT admin_token $ADMIN_TOKEN
+
+! create signing keys and certificates, restrict access to generated data
+# keystone-manage pki_setup --keystone-user keystone --keystone-group keystone
+# chown -R keystone:keystone /etc/keystone/ssl
+# chmod -R o-rwx /etc/keystone/ssl
+
+! enable and start
+# service openstack-keystone start
+# chkconfig openstack-keystone on
+
+! periodically clear expired tokens
+# (crontab -l -u keystone 2>&1 | grep -q token_flush) || \
+echo '@hourly /usr/bin/keystone-manage token_flush >/var/log/keystone/keystone-tokenflush.log 2>&1' >> /var/spool/cron/keystone
+
+
+
+----------------------------
+define users, tenants, roles
+----------------------------
+
+! use env instead of --os-* option
+$ export OS_SERVICE_TOKEN=ADMIN_TOKEN
+$ export OS_SERVICE_ENDPOINT=http://localhost:35357/v2.0
+
+! create admin user
+$ keystone user-create --name=admin --pass=ADMIN_PASS --email=ADMIN_MAIL
+
+! create admin role
+$ keystone role-create --name=admin
+
+! create admin tenant
+$ keystone tenant-create --name=admin --description="Admin Tenant"
+
+! link user, role, tenant together
+$ keystone user-role-add --user=admin --role=admin --tenant=admin
+
+! link admin to _member role
+$ keystone user-role-add --user=admin --role=admin --tenant=admin
+
+
+! create a normal user
+$ keystone user-create --name=demo --pass=DEMO_PASS --emai=DEMO_MAIL
+
+! create demo tenant
+$ keystone tenant-create --name=demo --description="Demo Tenant"
+
+! link demo user, _member_ role and demo tenant
+$ keystone user-role-add --user=demo --tenant=demo --role=_member_
+
+
+! create service tenant
+!   -> openstack services typically share a single tenant named "service"
+$ keystone tenant-create --name=service --description="Service Tenant"
+
+
+--------------------------------------------
+define services and api endpoints (keystone)
+-------------------------------------------
+
+! create a service entry for Identity Service.
+$ keystone service-create --name=keystone --type=identity --description="Openstack Identity"
+
+! specify api endpoint (using service_id of service created above)
+$ keystone endpoint-create \
+  --service-id=$(keystone service-list | awk '/ identity / {print $2}') \
+  --publicurl=http://localhost:5000/v2.0 \
+  --internalurl=http://localhost:5000/v2.0 \
+  --adminurl=http://localhost:35357/v2.0
+
+
+------------------------------------------
+verify Identity service Installatin
+(Examples of how to use keystone)
+-----------------------------------------
+
+! clear env OS_SERVICE_TOKEN and OS_SERVICE_ENDPOINT set above
+unset OS_SERVICE_TOKEN OS_SERVICE_ENDPOINT
+
+! user-name based authentication
+$ keystone --os-username=admin --os-password=ADMIN_PASS \
+  --os-auth-url=http://localhost:35357/v2.0 token-get
+
+! authorization with tenant
+$ keystone --os-username=admin --os-password=ADMIN_PASS --os-tenant-name=admin \
+  --os-auth-url=http://localhost:3357/v2.0 token-get
+
+! user env var instead of --os-* options
+! save it in admin-openrc.sh
+export OS_USERNAME=admin
+export OS_PASSWORD=ADMIN_PASS
+export OS_TENANT_NAME=admin
+export OS_AUTH_URL=http://localhost:35357/v2.0
+
+! source admin-openrc.sh to use
+$ source admin-openrc.sh
+
+! use
+$ keystone token-get
+$ keystone user-list
+$ keystone user-role-list
+$ keystone tenant-list
